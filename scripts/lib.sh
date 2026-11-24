@@ -99,7 +99,7 @@ load_bundle() {
     local b="$1"
     [[ "${b}" =~ ^[a-z0-9-]+/[0-9A-Za-z.+-]+$ ]] || die "invalid bundle ${b} (want <package>/<version>)"
     [[ -f "${ROOT_DIR}/bundles/${b}.env" ]] || die "unknown bundle ${b} (no bundles/${b}.env)"
-    unset MODE UPSTREAM_BUNDLE IMAGE_TARGET IMAGE_FROM
+    unset MODE UPSTREAM_BUNDLE IMAGE_TARGET IMAGE_FROM SKIP_RANGE
     load_env "${ROOT_DIR}/bundles/${b}.env"
     PACKAGE="${b%%/*}"
     BUNDLE_VERSION="${b#*/}"

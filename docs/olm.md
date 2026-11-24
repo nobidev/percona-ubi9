@@ -9,7 +9,7 @@ which OLM would revert.
 
 | Package | Bundles (channel `stable`) | Operator image |
 |---|---|---|
-| `percona-postgresql-operator` | `v2.8.2` → `v3.1.0` | `ghcr.io/nobidev/percona-ubi9/percona-postgresql-operator:<version>` |
+| `percona-postgresql-operator` | `v2.8.2` → `v2.9.0` → `v3.0.0` → `v3.1.0` | `ghcr.io/nobidev/percona-ubi9/percona-postgresql-operator:<version>` |
 | `percona-server-mongodb-operator` | `v1.23.1` | `ghcr.io/nobidev/percona-ubi9/percona-server-mongodb-operator:1.23.1` |
 | `percona-server-mysql-operator` | `v1.3.0` | `docker.io/percona/percona-server-mysql-operator:1.3.0` (upstream, UBI 9) |
 | `percona-xtradb-cluster-operator` | `v1.20.0` | `docker.io/percona/percona-xtradb-cluster-operator:1.20.0` (upstream, UBI 9) |
@@ -31,10 +31,22 @@ digest in `versions/common.env`); the bundles are pinned by digest in
 Packages (description, icon, default channel) and channels come from the
 upstream catalog, restricted to the bundles shipped here. Where an entry
 `replaces` a bundle that is not shipped, it replaces the nearest shipped
-bundle along the upstream chain instead (`v3.1.0` replaces `v2.8.2`; upstream
-it replaces `v3.0.0` and skips `<3.1.0`, so OLM already offers
-`v2.8.2` → `v3.1.0` directly). `skipRange` values like `<v2.8.2` (not valid
-semver, rejected by `opm validate`) become `<2.8.2`.
+bundle along the upstream chain instead. `skipRange` values like `<v2.8.2`
+(not valid semver, rejected by `opm validate`) become `<2.8.2`.
+
+A bundle's `SKIP_RANGE` replaces the upstream `skipRange` of its channel
+entry. Percona supports upgrading the PostgreSQL operator only to the nearest
+version, while upstream `v3.0.0` skips `<3.0.0` and `v3.1.0` skips `<3.1.0`
+(OLM would offer `v2.8.2` → `v3.1.0` directly). Here `v3.0.0` skips
+`>=2.9.0 <3.0.0` and `v3.1.0` skips `>=3.0.0 <3.1.0`, so the only path from
+`v2.8.2` is `v2.8.2` → `v2.9.0` → `v3.0.0` → `v3.1.0`, one InstallPlan per
+step (`v2.9.0` likewise skips only `>=2.8.2 <2.9.0`). The upgrade to `v3.0.0`
+migrates the upstream CRDs from `postgres-operator.crunchydata.com` to
+`upstream.pgv2.percona.com` automatically and cannot be undone. The CSVs
+inside the bundles keep their upstream `olm.skipRange` annotations (the
+bundles are unchanged apart from the image); OLM uses the catalog's channel
+entries, so only tools that rebuild channels from the CSV annotations would
+see the upstream ranges.
 
 The catalog image is built on `quay.io/operator-framework/opm` (static
 binaries). CI checks that it runs on an emulated Ivy Bridge CPU
@@ -61,13 +73,14 @@ Run these with `oc` against the cluster, one step at a time; each changes the
 cluster.
 
 1. **Do not approve** InstallPlans that come from `community-operators` for
-   `percona-postgresql-operator.v3.1.0` or `percona-server-mongodb-operator`
+   `percona-postgresql-operator` `>= 2.9.0` or `percona-server-mongodb-operator`
    `>= 1.22.0`: they deploy the UBI 10 operator image, which exits with
    `Fatal glibc error: CPU does not support x86-64-v3` on x86-64-v2 nodes.
 
 2. Make sure every Percona Subscription uses manual approval **before**
-   changing its source. With `Automatic`, the source change alone would
-   install `percona-postgresql-operator.v3.1.0` (a major upgrade) right away:
+   changing its source. With `Automatic`, OLM would run
+   `percona-postgresql-operator` 2.9.0 → 3.0.0 → 3.1.0 back to back, waiting
+   only for each CSV to succeed, not for the CRD migration of 3.0.0:
    ```bash
    oc -n openshift-operators get subscription \
      -o custom-columns=NAME:.metadata.name,SOURCE:.spec.source,APPROVAL:.spec.installPlanApproval,INSTALLED:.status.installedCSV
@@ -110,18 +123,22 @@ cluster.
    oc -n openshift-operators get installplan <name> \
      -o jsonpath='{range .status.bundleLookups[*]}{.catalogSourceRef.name} {.identifier} {.path}{"\n"}{end}'
    ```
-   `percona-postgresql-operator` 2.8.2 → 3.1.0 is a major upgrade (among
-   other things the upstream CRD group moves from
-   `postgres-operator.crunchydata.com` to `upstream.pgv2.percona.com`):
-   follow Percona's upgrade documentation and take backups first. Then:
+   `percona-postgresql-operator` goes one version per InstallPlan
+   (2.8.2 → 2.9.0 → 3.0.0 → 3.1.0); approve the next one only when the
+   previous step is done. 2.9.0 → 3.0.0 migrates the upstream CRDs from
+   `postgres-operator.crunchydata.com` to `upstream.pgv2.percona.com`
+   (irreversible; the `APIGroupMigration` condition of each PerconaPGCluster
+   shows its progress): follow Percona's upgrade documentation and take
+   backups first. Then:
    ```bash
    oc -n openshift-operators patch installplan <name> --type merge -p '{"spec":{"approved":true}}'
    ```
 
 7. Verify: the operator pod runs
    `ghcr.io/nobidev/percona-ubi9/percona-postgresql-operator:3.1.0`, and the
-   init containers of database pods of clusters still at `crVersion: 2.8.2`
-   use `ghcr.io/nobidev/percona-ubi9/percona-postgresql-operator:2.8.2`.
+   init containers of database pods of clusters at an older `crVersion`
+   (2.8.2, 2.9.0, 3.0.0) use
+   `ghcr.io/nobidev/percona-ubi9/percona-postgresql-operator:<crVersion>`.
 
 To go back, point the Subscriptions at `community-operators` again; OLM does
 not downgrade an installed CSV.

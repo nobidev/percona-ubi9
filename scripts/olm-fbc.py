@@ -2,8 +2,8 @@
 """Assemble the file-based catalog (FBC) of the bundles this repository ships.
 
 Inputs:
-  --bundles FILE   one line per bundle:
-                   <package>/<version> <mode> <bundle ref@digest> <upstream bundle ref@digest> <image_from|-> <image_to|->
+  --bundles FILE   one tab-separated line per bundle:
+                   <package>/<version> <mode> <bundle ref@digest> <upstream bundle ref@digest> <image_from|-> <image_to|-> <skip_range|->
   --upstream DIR   DIR/<package>.json: `opm render` of the upstream index's package (JSON stream)
   --rendered DIR   DIR/<package>/<version>.json: `opm render` of our bundle image, and
                    DIR/<package>/<version>.upstream.json: of the upstream bundle image
@@ -16,8 +16,10 @@ is kept. Every upstream channel keeps the entries of the bundles shipped here,
 in upstream order; an entry whose `replaces` names a bundle that is not shipped
 is pointed at the nearest shipped bundle along the upstream replaces chain (or
 loses `replaces` when there is none). skips are kept as is; a skipRange is
-kept except that a "v" right after a comparator is dropped ("<v2.8.2" is not a
-valid semver range, opm validate rejects it; "<2.8.2" means the same).
+replaced by the bundle's SKIP_RANGE when set (to enforce an upgrade path),
+otherwise kept except that a "v" right after a comparator is dropped
+("<v2.8.2" is not a valid semver range, opm validate rejects it; "<2.8.2"
+means the same).
 Channels without shipped bundles are dropped.
 
 Checks (exit 1 on failure):
@@ -82,13 +84,14 @@ def main():
         for line in f:
             if not line.strip():
                 continue
-            target, mode, ref, upstream_ref, image_from, image_to = line.split()
+            target, mode, ref, upstream_ref, image_from, image_to, skip_range = line.rstrip("\n").split("\t")
             package, version = target.split("/", 1)
             shipped.setdefault(package, {})[f"{package}.v{version}"] = {
                 "target": target, "version": version, "mode": mode, "ref": ref,
                 "upstream_ref": upstream_ref,
                 "image_from": None if image_from == "-" else image_from,
                 "image_to": None if image_to == "-" else image_to,
+                "skip_range": None if skip_range == "-" else skip_range,
             }
 
     operators = []
@@ -110,7 +113,11 @@ def main():
                 if e["name"] not in bundles:
                     continue
                 new = {k: v for k, v in e.items() if k != "replaces"}
-                if new.get("skipRange"):
+                override = bundles[e["name"]]["skip_range"]
+                if override is not None:
+                    print(f"{package}: {e['name']}: skipRange {new.get('skipRange')!r} -> {override!r} (SKIP_RANGE in bundles/)")
+                    new["skipRange"] = override
+                elif new.get("skipRange"):
                     fixed = re.sub(r"([<>=!~^]+)\s*v(?=\d)", r"\1", new["skipRange"])
                     if fixed != new["skipRange"]:
                         print(f"{package}: {e['name']}: skipRange {new['skipRange']!r} -> {fixed!r} (not a valid semver range)")

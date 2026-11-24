@@ -6,3 +6,11 @@
 	path = upstream/percona-server-mongodb-operator/1.23.1
 	url = https://github.com/percona/percona-server-mongodb-operator
 	shallow = true
+[submodule "upstream/percona-postgresql-operator/3.0.0"]
+	path = upstream/percona-postgresql-operator/3.0.0
+	url = https://github.com/percona/percona-postgresql-operator
+	shallow = true
+[submodule "upstream/percona-postgresql-operator/2.9.0"]
+	path = upstream/percona-postgresql-operator/2.9.0
+	url = https://github.com/percona/percona-postgresql-operator
+	shallow = true

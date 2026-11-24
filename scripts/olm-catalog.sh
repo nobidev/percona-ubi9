@@ -36,7 +36,9 @@ build() {
         (
             load_bundle "${target}"
             [[ "${ref%@*}" == "${BUNDLE_IMAGE%:*}" ]] || die "${target}: bundles.txt has ${ref}, want ${BUNDLE_IMAGE%:*}@..."
-            echo "${target} ${MODE} ${ref} ${UPSTREAM_BUNDLE} ${IMAGE_FROM:--} ${IMAGE_TO:--}"
+            # Tab separated: SKIP_RANGE may contain spaces.
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${target}" "${MODE}" "${ref}" "${UPSTREAM_BUNDLE}" \
+                "${IMAGE_FROM:--}" "${IMAGE_TO:--}" "${SKIP_RANGE:--}"
         ) >> "${work}/bundles.spec"
     done < "${OLM_DIR}/bundles.txt"
 
@@ -60,7 +62,7 @@ build() {
         for package in "${packages[@]}"; do
             opm_run render "index/${package}" -o json > "upstream/${package}.json"
         done
-        while read -r target _ ref upstream_ref _; do
+        while IFS=$'\t' read -r target _ ref upstream_ref _; do
             package="${target%%/*}"
             mkdir -p "rendered/${package}"
             log "opm render ${ref}"

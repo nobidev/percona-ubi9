@@ -28,6 +28,8 @@ source file comes from the upstream repositories.
 | Target | Upstream image (base) | Published as | How |
 |---|---|---|---|
 | `percona-postgresql-operator/3.1.0` | `percona/percona-postgresql-operator:3.1.0` (UBI 10.2) | `ghcr.io/nobidev/percona-ubi9/percona-postgresql-operator:3.1.0`, `:3.1.0-ubi9` | rebuilt from `v3.1.0` with `BASE_IMAGE=ubi9` |
+| `percona-postgresql-operator/3.0.0` | `percona/percona-postgresql-operator:3.0.0` (UBI 10.2) | `ghcr.io/nobidev/percona-ubi9/percona-postgresql-operator:3.0.0`, `:3.0.0-ubi9` | rebuilt from `v3.0.0` with `BASE_IMAGE=ubi9` |
+| `percona-postgresql-operator/2.9.0` | `percona/percona-postgresql-operator:2.9.0` (UBI 10.1) | `ghcr.io/nobidev/percona-ubi9/percona-postgresql-operator:2.9.0`, `:2.9.0-ubi9` | rebuilt from `v2.9.0` with `BASE_IMAGE=ubi9` |
 | `percona-postgresql-operator/2.8.2` | `percona/percona-postgresql-operator:2.8.2` (UBI 9.7) | `ghcr.io/nobidev/percona-ubi9/percona-postgresql-operator:2.8.2`, `:2.8.2-ubi9` | copied unchanged (same digest, all platforms) |
 | `percona-server-mongodb-operator/1.23.1` | `percona/percona-server-mongodb-operator:1.23.1` (UBI 10.2) | `ghcr.io/nobidev/percona-ubi9/percona-server-mongodb-operator:1.23.1`, `:1.23.1-ubi9` | rebuilt from `v1.23.1` with `BASE_IMAGE=ubi9` |
 
@@ -61,7 +63,7 @@ operator's version they use `<operator image repository>:<crVersion>`
 `pkg/psmdb/init` in the MongoDB operator). Therefore:
 
 * the repository must hold a tag for every `crVersion` still in use
-  (`2.8.2` for clusters not yet moved to `crVersion: 3.1.0`). An upstream
+  (`2.8.2`, `2.9.0`, `3.0.0` for clusters not yet moved to `crVersion: 3.1.0`). An upstream
   image that is already UBI 9 is published as a `MODE=copy` target;
 * deploy the operator by **tag** (`...:3.1.0`), not by digest: the
   repository is derived by cutting the image reference at the first `:`.
@@ -79,7 +81,8 @@ state.
 
 `ghcr.io/nobidev/percona-ubi9/catalog:latest` is an OLM catalog
 (`deploy/catalogsource.yaml`) whose bundles are the community catalog's
-bundles of `percona-postgresql-operator` (2.8.2, 3.1.0) and
+bundles of `percona-postgresql-operator` (2.8.2, 2.9.0, 3.0.0, 3.1.0, upgraded one
+version at a time) and
 `percona-server-mongodb-operator` (1.23.1) with the operator image replaced
 by the images above (nothing else changed, checked by CI), plus unchanged
 copies of `percona-server-mysql-operator` 1.3.0 and
