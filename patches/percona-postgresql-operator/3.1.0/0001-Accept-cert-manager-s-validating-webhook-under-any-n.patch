@@ -1,0 +1,162 @@
+From 1cf0814d127722ef9455e245bc799f4c94a0934d Mon Sep 17 00:00:00 2001
+From: NobiDev Code-AI <code-ai@nobidev.com>
+Date: Tue, 24 Nov 2026 07:07:14 +0000
+Subject: [PATCH] Accept cert-manager's validating webhook under any name
+
+The cert-manager check (cmapichecker) creates an invalid dry-run
+CertificateRequest and expects the validating webhook to deny it, but it
+only recognizes the denial when the webhook is named
+"webhook.cert-manager.io", as in the Helm chart and static manifests.
+cert-manager installed through OLM names it
+"validate.webhooks.cert-manager.io", so the check failed with
+
+  admission webhook "validate.webhooks.cert-manager.io" denied the
+  request: spec.request: Invalid value: ...: error decoding certificate
+  request PEM block
+
+and the PostgresCluster controller stopped reconciling.
+
+Treat exactly that denial as success: a webhook named cert-manager.io
+or a subdomain of it rejecting spec.request because it is not a PEM
+block. Only the checker's invalid request can fail that way (the valid
+one carries a real CSR), so the check of the mutating webhook is never
+skipped. Denials by other webhooks or for other reasons are still
+errors.
+---
+ percona/certmanager/certmanager.go      | 22 ++++++++
+ percona/certmanager/certmanager_test.go | 72 +++++++++++++++++++++++++
+ 2 files changed, 94 insertions(+)
+
+diff --git a/percona/certmanager/certmanager.go b/percona/certmanager/certmanager.go
+index 4d4504a..7fcaa91 100644
+--- a/percona/certmanager/certmanager.go
++++ b/percona/certmanager/certmanager.go
+@@ -169,6 +169,14 @@ func (c *controller) Check(ctx context.Context, config *rest.Config, ns string)
+ 		return err
+ 	}
+ 	err = checker.Check(ctx)
++	if err != nil && isValidatingWebhookDenial(err) {
++		// cert-manager's validating webhook rejected the checker's invalid
++		// dry-run CertificateRequest, as it should: cert-manager is working.
++		// cmapichecker only recognizes the webhook name of the Helm chart and
++		// static manifests ("webhook.cert-manager.io"); installs through OLM
++		// name it "validate.webhooks.cert-manager.io".
++		err = nil
++	}
+ 	if err != nil {
+ 		switch err := translateCheckError(err); {
+ 		case errors.Is(err, cmapichecker.ErrCertManagerCRDsNotFound):
+@@ -1152,6 +1160,20 @@ func (c *controller) ApplyPGBackRestRepoCertificate(ctx context.Context, cluster
+ 	return nil
+ }
+ 
++// regexValidatingWebhookDenial matches the rejection of cmapichecker's invalid
++// dry-run CertificateRequest by a cert-manager validating webhook of any name
++// (cert-manager.io or a subdomain of it). Only the checker's second request,
++// whose spec.request is "invalid-csr", can fail to decode as a PEM block: the
++// first one carries a real CSR, so a match never skips the check of the
++// mutating webhook. Other denials, by other webhooks or for other reasons, do
++// not match.
++var regexValidatingWebhookDenial = regexp.MustCompile(
++	`admission webhook "(?:[^"]*\.)?cert-manager\.io" denied the request: .*spec\.request: Invalid value: .*error decoding certificate request PEM block`)
++
++func isValidatingWebhookDenial(err error) bool {
++	return regexValidatingWebhookDenial.MatchString(err.Error())
++}
++
+ func translateCheckError(err error) error {
+ 	const crdsMapping3Error = `error finding the scope of the object: failed to get restmapping: unable to retrieve the complete list of server APIs: cert-manager.io/v1: no matches for cert-manager.io/v1, Resource=`
+ 	// TODO: remove as soon as TranslateToSimpleError uses this regexp
+diff --git a/percona/certmanager/certmanager_test.go b/percona/certmanager/certmanager_test.go
+index 3a985bc..d13aad1 100644
+--- a/percona/certmanager/certmanager_test.go
++++ b/percona/certmanager/certmanager_test.go
+@@ -172,6 +172,33 @@ func TestCheck(t *testing.T) {
+ 		assert.ErrorIs(t, err, ErrCertManagerNotReady)
+ 	})
+ 
++	t.Run("returns nil when the validating webhook has another name (OLM install)", func(t *testing.T) {
++		cl := setupFakeClient(t)
++		ctrl := NewController(cl, cl.Scheme(), false).(*controller)
++		ctrl.newChecker = func(_ *rest.Config, _ string) (cmapichecker.Interface, error) {
++			return &mockChecker{
++				err: errors.Errorf(`admission webhook "validate.webhooks.cert-manager.io" denied the request: spec.request: Invalid value: []byte{0x69, 0x6e, 0x76, 0x61, 0x6c, 0x69, 0x64, 0x2d, 0x63, 0x73, 0x72}: error decoding certificate request PEM block`),
++			}, nil
++		}
++
++		err := ctrl.Check(t.Context(), &rest.Config{}, "default")
++		assert.NoError(t, err)
++	})
++
++	t.Run("returns error when the cert-manager webhook denies the request for another reason", func(t *testing.T) {
++		cl := setupFakeClient(t)
++		ctrl := NewController(cl, cl.Scheme(), false).(*controller)
++		ctrl.newChecker = func(_ *rest.Config, _ string) (cmapichecker.Interface, error) {
++			return &mockChecker{
++				err: errors.Errorf(`admission webhook "validate.webhooks.cert-manager.io" denied the request: [spec.username: Forbidden: username identity must be that of the requester, spec.groups: Forbidden: groups identity must be that of the requester]`),
++			}, nil
++		}
++
++		err := ctrl.Check(t.Context(), &rest.Config{}, "default")
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "spec.username: Forbidden")
++	})
++
+ 	t.Run("returns original error for unhandled checker errors", func(t *testing.T) {
+ 		cl := setupFakeClient(t)
+ 		ctrl := NewController(cl, cl.Scheme(), false).(*controller)
+@@ -187,6 +214,51 @@ func TestCheck(t *testing.T) {
+ 	})
+ }
+ 
++func TestIsValidatingWebhookDenial(t *testing.T) {
++	tests := map[string]struct {
++		err  error
++		want bool
++	}{
++		"OLM webhook name": {
++			err:  errors.Errorf(`admission webhook "validate.webhooks.cert-manager.io" denied the request: spec.request: Invalid value: []byte{0x69, 0x6e, 0x76, 0x61, 0x6c, 0x69, 0x64, 0x2d, 0x63, 0x73, 0x72}: error decoding certificate request PEM block`),
++			want: true,
++		},
++		"Helm webhook name": {
++			err:  errors.Errorf(`admission webhook "webhook.cert-manager.io" denied the request: spec.request: Invalid value: "invalid-csr": error decoding certificate request PEM block`),
++			want: true,
++		},
++		"wrapped error": {
++			err:  errors.Errorf(`check cert-manager: admission webhook "validate.webhooks.cert-manager.io" denied the request: spec.request: Invalid value: []byte{0x69, 0x6e, 0x76, 0x61, 0x6c, 0x69, 0x64, 0x2d, 0x63, 0x73, 0x72}: error decoding certificate request PEM block`),
++			want: true,
++		},
++		"look-alike webhook name": {
++			err:  errors.Errorf(`admission webhook "policy.notcert-manager.io" denied the request: spec.request: Invalid value: "x": error decoding certificate request PEM block`),
++			want: false,
++		},
++		"other webhook": {
++			err:  errors.Errorf(`admission webhook "validate.kyverno.svc-fail" denied the request: spec.request: Invalid value: "x": error decoding certificate request PEM block`),
++			want: false,
++		},
++		"spec.request rejected for another reason": {
++			err:  errors.Errorf(`admission webhook "validate.webhooks.cert-manager.io" denied the request: spec.request: Invalid value: "x": csr key usages do not match`),
++			want: false,
++		},
++		"mutation incorrect": {
++			err:  errors.Errorf(`admission webhook "validate.webhooks.cert-manager.io" denied the request: [spec.username: Forbidden: username identity must be that of the requester]`),
++			want: false,
++		},
++		"webhook unreachable": {
++			err:  errors.Errorf(`Post "https://cert-manager-webhook.cert-manager.svc:443/validate?timeout=10s": dial tcp 10.96.38.90:443: connect: connection refused`),
++			want: false,
++		},
++	}
++	for name, tt := range tests {
++		t.Run(name, func(t *testing.T) {
++			assert.Equal(t, tt.want, isValidatingWebhookDenial(tt.err))
++		})
++	}
++}
++
+ func TestApplyIssuer(t *testing.T) {
+ 	cluster := testCluster()
+ 	client := setupFakeClient(t, cluster)
+-- 
+2.43.0
+
