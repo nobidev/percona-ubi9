@@ -44,6 +44,7 @@ docker buildx build \
     --label org.opencontainers.image.version="${VERSION}" \
     --label org.opencontainers.image.base.name="registry.access.redhat.com/${UBI_BASE_IMAGE}/ubi-minimal" \
     --label io.nobidev.percona-ubi9.upstream="${UPSTREAM_REPO}@${UPSTREAM_REF}" \
+    --label "${BUILD_KEY_LABEL}=$(build_key)" \
     --progress plain \
     --load \
     ${EXTRA_BUILD_FLAGS:-} \

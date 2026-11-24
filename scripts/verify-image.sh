@@ -14,22 +14,34 @@
 # execution test must FAIL there with "CPU does not support x86-64-v3",
 # otherwise the test cannot tell v2 from v3 and proves nothing (d).
 #
-# usage: verify-image.sh [--control] IMAGE
+# With --generic, IMAGE is any RHEL 9 based image (no TARGET): a, the ISA scan
+# of b and COMMON_SMOKE_CMDS of c only (used for the operator images of the
+# OLM bundles that are copied unchanged).
+#
+# usage: verify-image.sh [--control|--generic] IMAGE
 source "$(dirname "$0")/lib.sh"
-[[ -n "${TARGET:-}" ]] || die "TARGET is not set (make targets)"
 
 control=0
-if [[ "${1:-}" == --control ]]; then
-    control=1
-    shift
-fi
-[[ $# -eq 1 ]] || die "usage: $0 [--control] IMAGE"
+generic=0
+case "${1:-}" in
+    --control) control=1; shift ;;
+    --generic) generic=1; shift ;;
+esac
+[[ $# -eq 1 ]] || die "usage: $0 [--control|--generic] IMAGE"
 image="$1"
+if [[ "${generic}" == 1 ]]; then
+    WORK_DIR="${OLM_DIR}/verify"
+    TARGET="${TARGET:-${image}}"
+    BINARIES=""
+    SMOKE_CMDS=""
+else
+    [[ -n "${TARGET:-}" ]] || die "TARGET is not set (make targets)"
+fi
 
 command -v qemu-x86_64 >/dev/null || die "qemu-x86_64 not found (install qemu-user)"
 command -v objdump >/dev/null || die "objdump not found (install binutils)"
 command -v readelf >/dev/null || die "readelf not found (install binutils)"
-if [[ "${control}" == 0 ]]; then
+if [[ "${control}" == 0 && "${generic}" == 0 ]]; then
     [[ -n "${BINARIES:-}" ]] || die "${TARGET}: BINARIES is empty"
     [[ -n "${SMOKE_CMDS:-}" ]] || die "${TARGET}: SMOKE_CMDS is empty"
 fi
@@ -114,7 +126,8 @@ elf_interp() {
 }
 
 # --- export the image root filesystem -----------------------------------------
-if ! docker image inspect "${image}" >/dev/null 2>&1; then
+# --generic checks what the registry serves now, never a stale local copy.
+if [[ "${generic}" == 1 ]] || ! docker image inspect "${image}" >/dev/null 2>&1; then
     [[ "${image}" != localhost/* ]] || die "${image} is not built (make build TARGET=${TARGET})"
     docker pull -q --platform "${PLATFORM}" "${image}" >/dev/null
 fi
@@ -161,6 +174,7 @@ fi
 if [[ "${control}" == 0 ]]; then
     echo "b. GLIBC symbol versions (max GLIBC_${MAX_GLIBC}) and shared libraries"
     read -r -a binaries <<< "${BINARIES}"
+    [[ "${generic}" == 0 ]] || echo "  (--generic: no binary list)"
     for bin in "${binaries[@]}"; do
         if ! f="$(in_rootfs "${bin}")" || [[ ! -f "${f}" ]]; then
             fail "${bin}: missing"

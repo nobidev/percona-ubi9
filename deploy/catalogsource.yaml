@@ -1,0 +1,34 @@
+# OLM catalog of the Percona operators published by nobidev/percona-ubi9
+# (bundles/*): UBI 9 operator images that run on x86-64-v2 CPUs.
+# Apply with: oc apply -f deploy/catalogsource.yaml (see docs/olm.md).
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: percona-ubi9
+  namespace: openshift-marketplace
+spec:
+  displayName: Percona operators (UBI 9, x86-64-v2)
+  publisher: NobiDev
+  sourceType: grpc
+  image: ghcr.io/nobidev/percona-ubi9/catalog:latest
+  updateStrategy:
+    registryPoll:
+      interval: 30m
+  grpcPodConfig:
+    securityContextConfig: restricted
+    nodeSelector:
+      kubernetes.io/os: linux
+      node-role.kubernetes.io/master: ""
+    priorityClassName: system-cluster-critical
+    tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 120
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 120

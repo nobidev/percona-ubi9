@@ -77,6 +77,93 @@ if [[ -n "${TARGET:-}" ]]; then
     fi
 fi
 
+# --- OLM ------------------------------------------------------------------------
+OLM_REGISTRY="${OLM_REGISTRY:-${REGISTRY}}"
+OLM_DIR="${BUILD_DIR}/olm"
+CONTENT_LABEL=io.nobidev.percona-ubi9.content
+
+# All bundles (<package>/<version>), one per bundles/<package>/<version>.env.
+list_bundles() {
+    local f
+    for f in "${ROOT_DIR}"/bundles/*/*.env; do
+        f="${f#"${ROOT_DIR}/bundles/"}"
+        echo "${f%.env}"
+    done | sort -V
+}
+
+# Load bundles/<package>/<version>.env into the current shell (call it in a
+# subshell per bundle) and derive the bundle's names:
+#   PACKAGE, BUNDLE_VERSION, CSV_NAME, BUNDLE_IMAGE (${OLM_REGISTRY}/<package>-bundle:v<version>)
+#   MODE=rewrite: IMAGE_TO (${REGISTRY}/<image>:<version> of IMAGE_TARGET)
+load_bundle() {
+    local b="$1"
+    [[ "${b}" =~ ^[a-z0-9-]+/[0-9A-Za-z.+-]+$ ]] || die "invalid bundle ${b} (want <package>/<version>)"
+    [[ -f "${ROOT_DIR}/bundles/${b}.env" ]] || die "unknown bundle ${b} (no bundles/${b}.env)"
+    unset MODE UPSTREAM_BUNDLE IMAGE_TARGET IMAGE_FROM
+    load_env "${ROOT_DIR}/bundles/${b}.env"
+    PACKAGE="${b%%/*}"
+    BUNDLE_VERSION="${b#*/}"
+    CSV_NAME="${PACKAGE}.v${BUNDLE_VERSION}"
+    BUNDLE_IMAGE="${OLM_REGISTRY}/${PACKAGE}-bundle:v${BUNDLE_VERSION}"
+    BUNDLE_WORK="${OLM_DIR}/bundles/${b}"
+    [[ "${UPSTREAM_BUNDLE:-}" == *@sha256:* ]] || die "${b}: UPSTREAM_BUNDLE must be pinned by digest"
+    case "${MODE:-}" in
+        copy) IMAGE_TO="" ;;
+        rewrite)
+            [[ -n "${IMAGE_TARGET:-}" && -n "${IMAGE_FROM:-}" ]] || die "${b}: MODE=rewrite needs IMAGE_TARGET and IMAGE_FROM"
+            [[ -f "${ROOT_DIR}/versions/${IMAGE_TARGET}.env" ]] || die "${b}: IMAGE_TARGET ${IMAGE_TARGET} is not a target"
+            IMAGE_TO="${REGISTRY}/${IMAGE_TARGET%%/*}:${IMAGE_TARGET#*/}"
+            ;;
+        *) die "${b}: MODE must be rewrite or copy, got '${MODE:-}'" ;;
+    esac
+}
+
+# Run opm from OPM_IMAGE with the current directory mounted at /work.
+# OPM_RUN_ARGS: extra `docker run` flags (e.g. --network host to reach a
+# local registry). Docker credentials are not passed: everything opm reads is
+# public or on a local registry.
+opm_run() {
+    # The opm image has no containers policy.json; image references are
+    # pinned by digest, so signatures are not checked.
+    local policy="${OLM_DIR}/policy.json"
+    mkdir -p "${OLM_DIR}"
+    [[ -f "${policy}" ]] || echo '{"default":[{"type":"insecureAcceptAnything"}]}' > "${policy}"
+    # shellcheck disable=SC2086
+    docker run --rm --user "$(id -u):$(id -g)" -v "${PWD}:/work" -w /work \
+        -v "${policy}:/etc/containers/policy.json:ro" -e HOME=/tmp \
+        ${OPM_RUN_ARGS:-} "${OPM_IMAGE}" "$@"
+}
+
+# Value of a config label of a remote image, empty if the image or the label
+# does not exist.
+remote_label() {
+    docker buildx imagetools inspect --format '{{json .Image}}' "$1" 2>/dev/null \
+        | jq -r --arg l "$2" '(if .config then . else (to_entries | map(select(.key | startswith("linux/"))) | .[0].value) end) | .config.Labels[$l] // empty' 2>/dev/null || true
+}
+
+# Digest of a remote image (manifest or index), empty if it does not exist.
+remote_digest() {
+    docker buildx imagetools inspect --format '{{json .Manifest}}' "$1" 2>/dev/null | jq -r '.digest // empty' 2>/dev/null || true
+}
+
+# Key of everything a MODE=build image is built from in this repository: the
+# target settings, the upstream commit, the patches, the build script and the
+# shared build settings. Base images (UBI, golang) are not part of it, so an
+# unchanged key means "same sources", not "bit-identical image".
+BUILD_KEY_LABEL=io.nobidev.percona-ubi9.build-key
+build_key() {
+    {
+        cat "${ROOT_DIR}/versions/${TARGET}.env"
+        git -C "${UPSTREAM_DIR}" rev-parse HEAD
+        if [[ -d "${PATCH_DIR}" ]]; then
+            find "${PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort | xargs cat
+        fi
+        cat "${ROOT_DIR}/scripts/build-image.sh"
+        declare -f prepare_src
+        printf '%s\n' "${UBI_BASE_IMAGE}" "${PLATFORM}" "${SOURCE_URL}"
+    } | sha256sum | cut -d' ' -f1
+}
+
 # Split a ';'-separated command list into the array named by $1.
 split_cmds() {
     local -n _out="$1"

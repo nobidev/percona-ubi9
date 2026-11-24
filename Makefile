@@ -17,7 +17,8 @@ WORK = $(BUILD_DIR)/work/$(TARGET)
 
 # Settings that the scripts honour when set in the environment.
 export TARGET REGISTRY TAG_SUFFIX UBI_BASE_IMAGE PLATFORM BUILD_DIR QEMU_CPU MAX_GLIBC \
-       SMOKE_TIMEOUT CONTROL_IMAGE LOCAL_IMAGE EXTRA_BUILD_FLAGS
+       SMOKE_TIMEOUT CONTROL_IMAGE LOCAL_IMAGE EXTRA_BUILD_FLAGS \
+       OLM_REGISTRY OPM_RUN_ARGS REQUIRE_PUBLISHED_IMAGES FORCE_PUSH
 
 S := scripts
 
@@ -58,6 +59,30 @@ push: ## Publish TARGET (needs a passed `make verify` and docker login)
 all: build verify push ## build + verify + push for TARGET
 
 # ---------------------------------------------------------------------------
+# OLM bundles and catalog (bundles/<package>/<version>.env)
+# ---------------------------------------------------------------------------
+.PHONY: bundles olm-bundles olm-push-bundles olm-catalog olm-verify olm-push-catalog olm
+bundles: ## List the OLM bundles (<package>/<version>)
+	@source $(S)/lib.sh; list_bundles
+
+olm-bundles: ## Build the bundles: upstream community bundle with the GHCR operator image
+	$(S)/olm-bundle.sh build
+
+olm-push-bundles: ## Push the bundles to OLM_REGISTRY (unchanged content is not pushed again)
+	$(S)/olm-bundle.sh push
+
+olm-catalog: ## Render and validate the catalog of the pushed bundles, build the catalog image
+	$(S)/olm-catalog.sh build
+
+olm-verify: ## Catalog image on x86-64-v2 (ISA, qemu, gRPC) and every operator image it deploys
+	@mkdir -p $(BUILD_DIR)/olm; $(S)/olm-catalog.sh verify 2>&1 | tee $(BUILD_DIR)/olm/verify.log
+
+olm-push-catalog: ## Push the catalog image (:latest and :<date>-<content hash>)
+	$(S)/olm-catalog.sh push
+
+olm: olm-bundles olm-push-bundles olm-catalog olm-verify olm-push-catalog ## Whole OLM pipeline
+
+# ---------------------------------------------------------------------------
 # Maintenance
 # ---------------------------------------------------------------------------
 .PHONY: lint check check-public clean
@@ -65,8 +90,9 @@ lint: ## shellcheck and python syntax
 	shellcheck -x $(S)/*.sh
 	python3 -m py_compile $(S)/*.py
 
-check: lint ## lint + every target's submodule pin, patches and Dockerfile (needs network)
+check: lint ## lint + every target's submodule pin, patches and Dockerfile, bundle settings (needs network)
 	$(S)/check-targets.sh
+	$(S)/olm-bundle.sh check
 
 check-public: ## Report whether the published tags can be pulled anonymously
 	@$(S)/check-public.sh

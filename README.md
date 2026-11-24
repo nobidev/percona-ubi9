@@ -75,6 +75,18 @@ package set to **Public** once, in the package settings
 `make check-public` (also run by CI after publishing) reports the current
 state.
 
+## OLM catalog
+
+`ghcr.io/nobidev/percona-ubi9/catalog:latest` is an OLM catalog
+(`deploy/catalogsource.yaml`) whose bundles are the community catalog's
+bundles of `percona-postgresql-operator` (2.8.2, 3.1.0) and
+`percona-server-mongodb-operator` (1.23.1) with the operator image replaced
+by the images above (nothing else changed, checked by CI), plus unchanged
+copies of `percona-server-mysql-operator` 1.3.0 and
+`percona-xtradb-cluster-operator` 1.20.0 (already UBI 9). Installing and
+upgrading through it is the OLM way: an operator Deployment edited by hand is
+reverted by OLM. Details and the switch-over procedure: [docs/olm.md](docs/olm.md).
+
 ## Layout
 
 ```
@@ -82,8 +94,11 @@ upstream/<image>/<version>/   pinned submodules at the upstream tag (never modif
 patches/<image>/<version>/    optional git patches applied to a copy in build/src/
 versions/common.env           settings shared by all targets
 versions/<image>/<version>.env  one file per target (MODE=build or MODE=copy)
+bundles/<package>/<version>.env OLM bundles of the catalog (MODE=rewrite or MODE=copy)
 scripts/                      build, verification and publishing tooling
-.github/workflows/build.yml   CI: check, build + verify every target, publish
+deploy/catalogsource.yaml     CatalogSource of the OLM catalog
+docs/olm.md                   OLM catalog: contents, checks, switching a cluster to it
+.github/workflows/build.yml   CI: check, build + verify every target, OLM catalog, publish
 ```
 
 ## Building
@@ -148,15 +163,23 @@ Logs: `build/work/<target>/verify.log` and `control.log`.
 * pushes to `main` (except Markdown-only changes): the same, then publish
   every target;
 * `workflow_dispatch`: choose targets (`all` or a space-separated list) and
-  whether to publish (default: yes). Only runs on `main` publish.
+  whether to publish (default: yes). Only runs on `main` publish;
+* after the target jobs, the `olm` job builds the bundles and the catalog,
+  renders and validates them with opm and verifies the catalog image and
+  every operator image it deploys (pull requests: on a throwaway local
+  registry), then publishes them.
 
 Publishing happens only in `nobidev/percona-ubi9` itself (not in forks), and
 publishing runs are never cancelled half-way. Each target is a matrix job; it
 publishes only after its own checks a-d passed, and `make push` checks that
 the pushed digest is the verified image (`MODE=build`) or the pinned source
 digest (`MODE=copy`). The job summary shows the verification logs and the published
-digests. Tags are moved by every publish (a rebuild picks up current UBI 9
-packages); `org.opencontainers.image.revision` names the upstream commit.
+digests. A rebuilt image is pushed only when its build key changes (target
+settings, upstream commit, patches, build script: label
+`io.nobidev.percona-ubi9.build-key`), so the tags keep their digests across
+unrelated changes; a `workflow_dispatch` with `force_push` republishes them
+(e.g. to pick up current UBI 9 packages). `org.opencontainers.image.revision`
+names the upstream commit.
 
 ## Adding a target
 
