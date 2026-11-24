@@ -1,0 +1,142 @@
+name: build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: Targets to build (space separated <image>/<version>, or all)
+        type: string
+        default: all
+      publish:
+        description: Push the verified images to GHCR
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+# A publishing run is never cancelled half-way (two tags per target are
+# pushed one after the other); superseded pull request runs are.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Install tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+      - name: Lint scripts, check pins, apply patches
+        run: make check
+      - name: Select targets
+        id: targets
+        env:
+          REQUESTED: ${{ inputs.targets }}
+        run: |
+          all="$(make -s targets)"
+          if [[ -n "${REQUESTED}" && "${REQUESTED}" != all ]]; then
+            for t in ${REQUESTED}; do
+              grep -qxF "${t}" <<< "${all}" || { echo "::error::unknown target ${t}"; exit 1; }
+            done
+            selected="${REQUESTED}"
+          else
+            selected="${all}"
+          fi
+          targets="$(python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split()))' <<< "${selected}")"
+          echo "targets=${targets}" | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.check.outputs.targets) }}
+    name: ${{ matrix.target }}
+    env:
+      TARGET: ${{ matrix.target }}
+      # Pull requests build and verify only; pushes to main and manual runs
+      # on main (unless publish is unticked) also publish, and only in this
+      # repository (not in forks).
+      PUBLISH: ${{ github.repository == 'nobidev/percona-ubi9' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+          persist-credentials: false
+
+      # Optional: avoids Docker Hub's anonymous pull rate limit (golang
+      # builder, control and copied images) when the credentials exist.
+      - name: Log in to Docker Hub
+        if: vars.DOCKER_USERNAME != ''
+        env:
+          DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
+        run: |
+          if [[ -z "${DOCKER_TOKEN}" ]]; then
+            echo "DOCKER_TOKEN is not available here; pulling from Docker Hub anonymously"
+            exit 0
+          fi
+          echo "${DOCKER_TOKEN}" | docker login docker.io -u "${DOCKER_USERNAME}" --password-stdin
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-user binutils
+          qemu-x86_64 --version | head -n 1
+          docker buildx version
+          make info
+
+      - name: Build
+        run: make build
+
+      - name: Verify (a-c)
+        run: make verify-image
+
+      - name: Verify control (d)
+        run: make verify-control
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        if: env.PUBLISH == 'true'
+        run: make push
+
+      - name: Check anonymous pull
+        if: env.PUBLISH == 'true'
+        run: scripts/check-public.sh "${TARGET}"
+
+      - name: Summary
+        if: always()
+        run: |
+          work="build/work/${TARGET}"
+          {
+            echo "### ${TARGET}"
+            for f in verify.log control.log digests.txt; do
+              if [[ -f "${work}/${f}" ]]; then
+                echo "#### ${f}"
+                echo '```'
+                sed 's/\x1b\[[0-9;]*m//g' "${work}/${f}"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
