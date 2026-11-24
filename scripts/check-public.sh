@@ -1,0 +1,33 @@
+#!/bin/bash
+# Report whether the published tags of the given targets can be pulled
+# anonymously (a GHCR package is private when it is first created).
+# Informational: exits 0 either way unless STRICT=1.
+# usage: check-public.sh [TARGET...]   (default: every target)
+source "$(dirname "$0")/lib.sh"
+
+if [[ $# -eq 0 ]]; then
+    mapfile -t targets < <(list_targets)
+else
+    targets=("$@")
+fi
+
+private=0
+for t in "${targets[@]}"; do
+    repo="${REGISTRY}/${t%%/*}"
+    tag="${t#*/}"
+    host="${repo%%/*}"
+    path="${repo#*/}"
+    token="$(curl -fsS "https://${host}/token?scope=repository:${path}:pull" 2>/dev/null \
+        | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))' 2>/dev/null || true)"
+    code="$(curl -sS -o /dev/null -w '%{http_code}' \
+        -H "Authorization: Bearer ${token}" \
+        -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+        "https://${host}/v2/${path}/manifests/${tag}" || true)"
+    if [[ "${code}" == 200 ]]; then
+        echo "public   ${repo}:${tag}"
+    else
+        echo "private  ${repo}:${tag} (anonymous pull: HTTP ${code}; not published yet, or the package is private: set it to Public in its GitHub package settings)"
+        private=1
+    fi
+done
+[[ "${STRICT:-0}" != 1 || "${private}" == 0 ]]

@@ -1,0 +1,5 @@
+# scripts/lib.sh is sourced via "$(dirname "$0")/lib.sh"
+source-path=SCRIPTDIR
+external-sources=true
+# Variables are loaded dynamically from versions/*.env by scripts/lib.sh
+disable=SC2153,SC2154
